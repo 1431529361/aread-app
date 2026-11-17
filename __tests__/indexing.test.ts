@@ -120,6 +120,12 @@ describe('indexBook', () => {
 
     expect(result).toMatchObject({ status: 'ready', chunks: 3, embedded: 3, failed: 0 });
     expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-a' })).toBe(3);
+    expect(
+      await db.queryOne<{ embed_sig: string }>(
+        'SELECT embed_sig FROM rag_book_vectors WHERE book_id = ?',
+        ['b1'],
+      ),
+    ).toEqual({ embed_sig: 'sig-a' });
 
     let meta = await readMeta(db, 'b1');
     expect(meta).toMatchObject({ index_status: 'ready', embed_sig: 'sig-a', embed_dims: 1024 });
@@ -136,6 +142,12 @@ describe('indexBook', () => {
     expect(switched.status).toBe('ready');
     expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-b' })).toBe(3);
     expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-a' })).toBe(0);
+    expect(
+      await db.queryAll<{ embed_sig: string }>(
+        'SELECT embed_sig FROM rag_book_vectors WHERE book_id = ?',
+        ['b1'],
+      ),
+    ).toEqual([{ embed_sig: 'sig-b' }]);
     meta = await readMeta(db, 'b1');
     expect(meta?.embed_sig).toBe('sig-b');
     close();
@@ -166,15 +178,20 @@ describe('indexBook', () => {
     expect(hits).toHaveLength(25);
 
     const retry = embedWithSig('sig-a');
+    const progress: Array<{ done: number; total: number }> = [];
     const resumed = await indexBook({
       db,
       userId: LOCAL_USER_ID,
       bookId: 'b1',
       mode: 'embedding',
       embed: retry,
+      onProgress: (value) => progress.push(value),
     });
 
     expect(resumed.status).toBe('ready');
+    expect(progress[0]).toMatchObject({ done: 10, total: 25 });
+    expect(progress.at(-1)).toMatchObject({ done: 25, total: 25 });
+    expect(progress.every((value) => value.done <= value.total)).toBe(true);
     expect(retry.calls()).toBe(2);
     expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-a' })).toBe(25);
     close();
@@ -205,6 +222,37 @@ describe('indexBook', () => {
     const meta = await readMeta(db, 'b1');
     expect(meta?.embed_sig).toBe('sig-a');
     expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-a' })).toBe(3);
+    close();
+  });
+
+  it('最终切换前配置变化时保留旧 active sig 和旧向量', async () => {
+    const { db, close } = await createTestDb();
+    await insertBook(db, { id: 'b1', title: '书一' });
+
+    await indexBook({
+      db,
+      userId: LOCAL_USER_ID,
+      bookId: 'b1',
+      chunks: makeChunks(3),
+      embed: embedWithSig('sig-a'),
+    });
+
+    let checks = 0;
+    const result = await indexBook({
+      db,
+      userId: LOCAL_USER_ID,
+      bookId: 'b1',
+      mode: 'embedding',
+      embed: embedWithSig('sig-b'),
+      isEmbedSigCurrent: async () => ++checks === 1,
+    });
+
+    expect(result).toMatchObject({ status: 'partial', failed: 0 });
+    expect(result.error).toContain('配置已改变');
+    const meta = await readMeta(db, 'b1');
+    expect(meta?.embed_sig).toBe('sig-a');
+    expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-a' })).toBe(3);
+    expect(await countVectorsForBookSig(db, { bookId: 'b1', embedSig: 'sig-b' })).toBe(3);
     close();
   });
 

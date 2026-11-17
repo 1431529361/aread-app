@@ -1,8 +1,17 @@
 import type { ProviderConfigRecord } from '../db/repositories/providers';
 import type { EmbeddingClientConfig } from '../core/embedding/client';
 import type { LlmClientConfig } from '../core/llm/client';
+import type { FetchLike } from '../core/http';
 import { createNativeReranker, type RerankFunction } from '../core/rag/rerank';
 import { DEFAULT_CONTEXT_WINDOW } from '../core/context/tokens';
+
+export function requireHttpsBaseUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, '');
+  if (!/^https:\/\/[^/\s]+(?:\/.*)?$/i.test(normalized)) {
+    throw new Error('Base URL 必须使用 HTTPS');
+  }
+  return normalized;
+}
 
 export function getChatContextWindow(record: ProviderConfigRecord): number {
   return record.kind === 'chat'
@@ -18,7 +27,7 @@ export function buildChatConfig(
   if (record.kind !== 'chat') throw new Error('不是对话模型配置');
   if (!apiKey.trim()) throw new Error('对话模型 API Key 不能为空');
   return {
-    baseUrl: record.baseUrl,
+    baseUrl: requireHttpsBaseUrl(record.baseUrl),
     apiKey,
     model: record.model,
   };
@@ -31,7 +40,7 @@ export function buildEmbeddingConfig(
   if (record.kind !== 'embedding') throw new Error('不是向量模型配置');
   if (!apiKey.trim()) throw new Error('向量模型 API Key 不能为空');
   return {
-    baseUrl: record.baseUrl,
+    baseUrl: requireHttpsBaseUrl(record.baseUrl),
     apiKey,
     model: record.model,
     dims: record.dims ?? 1024,
@@ -47,13 +56,17 @@ export function buildEmbeddingConfig(
 export function buildReranker(
   record: ProviderConfigRecord,
   embeddingApiKey: string,
+  options: { fetchImpl?: FetchLike } = {},
 ): RerankFunction | null {
   if (record.kind !== 'embedding') return null;
   if (!record.rerankModel?.trim() || !embeddingApiKey.trim()) return null;
 
-  return createNativeReranker({
-    baseUrl: record.baseUrl,
-    apiKey: embeddingApiKey,
-    model: record.rerankModel,
-  });
+  return createNativeReranker(
+    {
+      baseUrl: requireHttpsBaseUrl(record.baseUrl),
+      apiKey: embeddingApiKey,
+      model: record.rerankModel,
+    },
+    { fetchImpl: options.fetchImpl },
+  );
 }

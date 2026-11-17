@@ -65,6 +65,11 @@ async function seedLibrary() {
     items: [{ chunkId: b2Ids[0], vector: [0.9, 0.1, 0, 0] }],
   });
 
+  await db.execute(
+    `UPDATE books_meta SET index_status = 'ready', embed_sig = 'sig1', embed_dims = 4
+     WHERE id IN ('b1', 'b2')`,
+  );
+
   return { db, raw, close, b1Ids, b2Ids };
 }
 
@@ -204,8 +209,27 @@ describe('retrieveInLibrary', () => {
     close();
   });
 
-  it('没有 FTS 候选时不做全库向量扫描', async () => {
+  it('配置切换期间只使用已激活当前 sig 的书籍向量', async () => {
     const { db, close } = await seedLibrary();
+    await db.execute(
+      "UPDATE books_meta SET index_status = 'partial', embed_sig = 'old-sig' WHERE id = 'b2'",
+    );
+
+    const hits = await retrieveInLibrary({
+      db,
+      query: '自由',
+      embedQuery: queryFree,
+      activeSig: 'sig1',
+      dims: 4,
+      topK: 5,
+    });
+    const b2 = hits.find((hit) => hit.bookId === 'b2');
+    expect(b2?.sources).toEqual(['fts']);
+    close();
+  });
+
+  it('没有 FTS 候选时仍通过书级路由完成语义召回', async () => {
+    const { db, b1Ids, close } = await seedLibrary();
 
     const hits = await retrieveInLibrary({
       db,
@@ -215,7 +239,9 @@ describe('retrieveInLibrary', () => {
       dims: 4,
     });
 
-    expect(hits).toEqual([]);
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].chunkId).toBe(b1Ids[0]);
+    expect(hits[0].sources).toContain('vector');
     close();
   });
 

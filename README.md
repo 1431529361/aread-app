@@ -1,23 +1,33 @@
 # AI 阅读助手（Android / Expo）
 
-本地优先的 Android 阅读助手：书籍、索引、会话、笔记、记忆全部存在设备本地；不设账号、服务器与云同步。
+本地优先的 Android 阅读助手：书籍、索引、会话、笔记、记忆默认保存在设备本地，不设账号、自有服务器与云同步。使用 AI 时，对话、查询和必要书籍片段会发送到用户配置的第三方 HTTPS 端点。
 完整交接方案见 [`../docs/android-app-spec.md`](../docs/android-app-spec.md)。
 
 ## 当前进度
 
-**M0-A + P0/P1 可离线部分已完成（不依赖模拟器/真机）**
+**M2 实现完成，待真机验收（M0-B/M1 一并验收）**
 
-- 核心纯逻辑：分词、分块 + locator、FTS5 查询构造、向量排序、RRF、`embed_sig`、prompt
-- RAG 管线：自定义 Embedding client、FTS5/向量仓储、索引状态机与断点续跑、单书/书库混合检索
-- P1 检索优化：追问查询改写、parent-child small-to-big、原生 `/rerank`（复用向量模型 Base URL/Key，`rerank_model` 留空禁用）
-- Agent：OpenAI 兼容 LLM client、9 个工具、预检索证据、引用校验、工具并行执行（并发 3）、流式降级
-- Memory v2：migration v3、ADD/UPDATE/SUPERSEDE/NOOP 写入合并、分层读取与使用统计
-- P1-5 长任务：DAG 调度、节点缓存/增量续跑、短章节 2~3 章批量 Map（单章缓存）、全书分层读书笔记、全量人物提及与关系分析；`context_window` 默认 200k，单次预算 `min(60%, 100k)`，超限自动降级 map-reduce
-- P1-6 评测：3 本合成样书 × 10 题，真实 Embedding/Chat/Rerank 检索与 Agent 评测，输出 Markdown/JSON 报告
-- SQLite schema、顺序 migration、op-sqlite 适配层、备份 ZIP 格式
-- Vitest 单测 270 个
+- M0-A/P1 离线核心不变：分块 + locator、FTS5 查询、向量/RRF、Agent 工具、Memory v2、长任务、评测
+- M0-B 设备集成：Expo dev build 配置、onboarding、书架/导入、WebView 阅读器、划词提问、划线、目录、字号/主题、关键词检索、引用跳转、会话流式输出
+- **M1 EPUB**：自研容错 XML 解析 + JSZip 解压 + 章节级消毒渲染（未采用 epub.js，理由见 `docs/m1-verification.md`）
+  - 导入：解析 `container.xml` / OPF / manifest / spine，读元数据（书名、作者），按 spine 分块建索引
+  - 阅读：逐章惰性渲染（不一次性加载整本 HTML），上一章/下一章、目录跳转、章内进度
+  - 图片：`<img>` / SVG `<image>` 按需读成 `data:` URI，飞行模式下也能显示
+  - 目录：EPUB3 `nav` 优先，回退 EPUB2 `toc.ncx`，都没有时按 spine 生成「第 N 节」
+  - DRM：`META-INF/rights.xml` 或正文加密直接拒绝；仅字体混淆（IDPF / Adobe）放行
+- **M1 统一 locator**：`{kind:'txt'|'epub', href, start, end}`；TXT offset 相对归一化全文，EPUB offset 相对各 spine 文档消毒后的纯文本；划线与引用都按 `href + offset` 跳回原文
+- **M1 GBK TXT**：纯 JS GB18030 解码器（内置 65KB 映射表，无 Buffer/TextDecoder 依赖）；控制字符启发式拦截伪 TXT 二进制
+- **M2 向量索引**：单一自定义 OpenAI 兼容 Embedding 端点，固定 1024 维；全局 `embed_sig`、逐批持久化、同书互斥、暂停/恢复、杀进程后启动续跑；配置变化会中止旧任务，active sig/书级向量/旧向量清理事务提交
+- **M2 混合与跨书检索**：单书 FTS + 向量 RRF；书库会话并行执行 FTS Top-200 与书级 centroid 语义路由，候选书内加载 chunk 向量后全局融合；没有关键词命中时仍可语义召回
+- **M2 长期记忆**：每 6 轮及会话结束异步抽取用户偏好/背景/兴趣，回答前按相关性注入；设置页“AI 对你的了解”可见、可逐条删除
+- 能力探测：启动时探针检测 op-sqlite FTS5；不可用时自动降级到 `rag_lexical` + JS BM25
+- 流式：优先 `expo/fetch`，失败自动切 XHR SSE（无新增依赖）
+- 隐私边界：Base URL 只接受 HTTPS；Key 仅持久化在 SecureStore，但会随请求发送到配置端点鉴权；onboarding/设置页披露对话、原文片段和向量分块的发送范围
+- 持久化：阅读进度/locator、书架、会话与引用快照、划线、设置均落库；密钥仅存 SecureStore
+- 导入上限：TXT ≤50MB，EPUB ≤100MB
+- Vitest 单测 393 个；`npx tsc --noEmit` 通过
 
-真机 FTS5 验证、EPUB 渲染/引用跳转、Memory 设置页、设置页 UI 与 M1+ 功能仍待后续里程碑；Expo Go 不可用，必须使用 dev build。
+真机验收项见 [`../docs/m1-verification.md`](../docs/m1-verification.md) 与 [`../docs/m2-verification.md`](../docs/m2-verification.md)。当前环境无 Android 设备/模拟器，设备侧结果仍需按清单执行；Expo Go 不可用，必须使用 dev build。
 
 ## 常用命令
 
@@ -29,6 +39,7 @@ npm run eval          # P1-6 live 评测（读取 .env.eval.local）
 npm run eval:p1-5     # P1-5 真实书笔记/人物分析（可用 P15_BOOK=bainian|chanhui 筛选）
 npx expo start        # 启动 Metro（M0-B 起需 dev build）
 npx expo run:android --device
+npx expo export --platform android --output-dir /tmp/aread-export  # 无设备时校验 bundle
 ```
 
 ## 评测
@@ -46,11 +57,17 @@ cp .env.eval.example .env.eval.local
 ## 目录
 
 ```
-app/                  # expo-router 页面（当前仅占位入口）
-src/core/             # rag / llm / agent / conversation / embedding / orchestrator 纯逻辑
+app/                  # expo-router 页面：onboarding、书架、设置、阅读器、书籍详情、搜索、会话
+src/components/       # 通用 UI、ProviderForm、书卡、导入进度
+src/core/             # rag / llm / agent / conversation / embedding / orchestrator / import / epub / text 纯逻辑
+src/core/epub/        # EPUB：容错 XML 解析、消毒成带 offset 的块、资源路径、OPF/spine、目录
+src/core/text/        # 共享文本层：实体解码/转义、字节 ↔ base64 / UTF-8 / UTF-16
 src/db/               # schema、migrations、op-sqlite 适配器、repositories
-src/reader/           # locator
-src/services/         # indexing、retrieval、parentExpansion、memory、taskRunner、backup
+src/reader/           # locator、进度换算、TXT/EPUB 阅读器 HTML（共用一套前端脚本）
+src/services/         # 导入、书籍内容、EPUB 内容、索引、检索、chat 流式、诊断、provider 测试、备份
+src/stores/           # Zustand 应用状态（初始化、FTS5、阅读偏好）
+src/navigation/       # 路由跳转封装
+scripts/              # GBK/GB18030 映射表生成脚本
 evals/                # P1-5/P1-6 数据集、评测执行器、报告（reports 已忽略）
 __tests__/            # Vitest 单测
 ```
